@@ -1,0 +1,23 @@
+# Generated experiment outputs (regenerable via run.py / plot_results.py)
+results.json
+figures/
+analysis/
+tables/
+results_scaled/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Secrets / credentials (never commit)
+*.pem
+*.key
+.env
