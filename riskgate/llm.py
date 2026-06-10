@@ -22,12 +22,49 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 class LLMUnavailable(RuntimeError):
     """Raised when a provider cannot be used (missing SDK, key, or model)."""
+
+
+# Substrings that mark a *transient* error worth retrying (throttling, timeouts,
+# brief 5xx). Matched case-insensitively against the exception's str().
+_TRANSIENT_MARKERS = (
+    "throttl", "toomanyrequests", "too many requests", "rate exceeded",
+    "rate limit", "429", "503", "serviceunavailable", "service unavailable",
+    "timeout", "timed out", "modelnotready", "model not ready",
+)
+
+
+def _is_transient(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _TRANSIENT_MARKERS)
+
+
+def retry_transient(fn: Callable, *, max_attempts: int = 6,
+                    base_delay: float = 1.0, max_delay: float = 30.0):
+    """Call fn() with exponential backoff + full jitter on transient errors.
+
+    Used to ride out Bedrock ThrottlingException during long concurrent runs.
+    Non-transient errors (bad model id, auth, validation) raise immediately so
+    a misconfigured run fails fast instead of retrying pointlessly. After the
+    final attempt the last exception propagates so the trial fails loudly.
+    """
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - classify then re-raise
+            attempt += 1
+            if attempt >= max_attempts or not _is_transient(exc):
+                raise
+            delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+            time.sleep(random.uniform(0, delay))  # full jitter
 
 
 @dataclass
@@ -118,7 +155,7 @@ class AnthropicProvider(LLMProvider):
             "description": t.description,
             "input_schema": t.parameters,
         } for t in tools]
-        resp = self._client.messages.create(
+        resp = retry_transient(lambda: self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
@@ -126,7 +163,7 @@ class AnthropicProvider(LLMProvider):
             tools=spec,
             tool_choice={"type": "any"},  # force the model to call exactly one tool
             messages=[{"role": "user", "content": user}],
-        )
+        ))
         tool_name, text = None, ""
         for block in resp.content:
             if block.type == "tool_use":
@@ -172,27 +209,63 @@ class BedrockProvider(LLMProvider):
             }
         } for t in tools]
 
+        def _infer_config():
+            # Some newer models (e.g. Claude Opus 4) reject `temperature` in
+            # inferenceConfig ("temperature is deprecated for this model"). We
+            # learn that once per provider instance and omit it thereafter.
+            cfg = {"maxTokens": self.max_tokens}
+            if not getattr(self, "_drop_temperature", False):
+                cfg["temperature"] = self.temperature
+            return cfg
+
         def _converse(tool_choice):
-            return self._client.converse(
+            # tool_choice=None => no toolConfig at all (pure text generation).
+            # Used as a last resort for models that emit malformed ToolUse blocks
+            # under forced tool calling (e.g. some Amazon Nova models); we then
+            # recover the chosen tool name from the model's free text.
+            kwargs = dict(
                 modelId=self.model,
                 system=[{"text": system}],
                 messages=[{"role": "user", "content": [{"text": user}]}],
-                toolConfig={"tools": tool_specs, "toolChoice": tool_choice},
-                inferenceConfig={
-                    "temperature": self.temperature,
-                    "maxTokens": self.max_tokens,
-                },
+                inferenceConfig=_infer_config(),
             )
+            if tool_choice is not None:
+                kwargs["toolConfig"] = {"tools": tool_specs, "toolChoice": tool_choice}
+            return retry_transient(lambda: self._client.converse(**kwargs))
+
+        def _converse_with_temp_fallback(tool_choice):
+            try:
+                return _converse(tool_choice)
+            except Exception as e_t:  # noqa: BLE001
+                if "temperature" in str(e_t).lower():
+                    # Drop temperature and retry once; remember for next calls.
+                    self._drop_temperature = True
+                    return _converse(tool_choice)
+                raise
+
+        def _is_tooluse_error(e) -> bool:
+            s = str(e).lower()
+            return "tooluse" in s or "invalid sequence" in s or "ModelErrorException" in str(e)
 
         try:
             # Prefer forced single-tool choice. Some families (e.g. Meta Llama)
             # reject toolChoice.any; fall back to "auto", which still returns a
             # toolUse block in practice for these models.
             try:
-                resp = _converse({"any": {}})
+                resp = _converse_with_temp_fallback({"any": {}})
             except Exception as e_any:  # noqa: BLE001
-                if "toolChoice" in str(e_any) or "ValidationException" in str(e_any):
-                    resp = _converse({"auto": {}})
+                if _is_tooluse_error(e_any):
+                    # Model botched the forced ToolUse (e.g. Nova). Drop tool
+                    # forcing entirely and recover the choice from text below.
+                    resp = _converse_with_temp_fallback(None)
+                elif "toolChoice" in str(e_any) or "ValidationException" in str(e_any):
+                    try:
+                        resp = _converse_with_temp_fallback({"auto": {}})
+                    except Exception as e_auto:  # noqa: BLE001
+                        if _is_tooluse_error(e_auto):
+                            resp = _converse_with_temp_fallback(None)
+                        else:
+                            raise
                 else:
                     raise
         except Exception as e:  # noqa: BLE001
@@ -247,7 +320,7 @@ class OpenAICompatProvider(LLMProvider):
             },
         } for t in tools]
         try:
-            resp = self._client.chat.completions.create(
+            resp = retry_transient(lambda: self._client.chat.completions.create(
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -257,18 +330,18 @@ class OpenAICompatProvider(LLMProvider):
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-            )
+            ))
         except Exception as e:  # noqa: BLE001
             # Some local servers don't support tool_choice="required"; retry "auto".
             try:
-                resp = self._client.chat.completions.create(
+                resp = retry_transient(lambda: self._client.chat.completions.create(
                     model=self.model, temperature=self.temperature,
                     max_tokens=self.max_tokens, tools=spec, tool_choice="auto",
                     messages=[
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
                     ],
-                )
+                ))
             except Exception as e2:  # noqa: BLE001
                 raise LLMUnavailable(f"openai-compatible call failed: {e2}") from e2
         msg = resp.choices[0].message
