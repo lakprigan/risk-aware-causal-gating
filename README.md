@@ -47,7 +47,7 @@ cd riskgate
 pip install -r requirements.txt
 python run.py            # prints the metrics table + H1-H5 PASS/FAIL, writes results.json
 python -m pytest -q      # structural unit tests
-python plot_results.py   # regenerate the paper figures from measured data
+python plot_results.py   # regenerate figures/*.png from measured data
 ```
 
 ## Real-LLM validation (paper Sec. 7.1)
@@ -111,8 +111,8 @@ if attacker-controlled content can set, e.g., `recipient_confirmed`, the gate
 opens. Authorization provenance is therefore an explicit assumption, not an
 emergent property (see paper §6.1 and Limitations).
 
-## Replacing placeholder numbers in the paper
+## Regenerating figures and metrics
 
-`results.json` contains the measured metrics. `plot_results.py` writes the three
-figures the paper includes; the Results table in `main.tex` can be filled from
-the same file.
+`results.json` contains the measured metrics. `plot_results.py` writes the
+figures into `figures/` from that file; `llm_runner.py` writes the real-LLM
+validation metrics to `llm_results.json`.
