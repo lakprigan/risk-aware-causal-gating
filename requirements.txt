@@ -1,2 +1,9 @@
 matplotlib>=3.5
 pytest>=7.0
+
+# Optional: only needed for the real-LLM validation track (llm_runner.py).
+# The deterministic benchmark (run.py) requires none of these.
+# Install the one(s) matching the provider you intend to use:
+#   anthropic>=0.39        # provider spec: anthropic:<model>
+#   boto3>=1.34            # provider spec: bedrock:<model-id>
+#   openai>=1.40           # provider spec: openai_compat:<model> (also Ollama/vLLM)

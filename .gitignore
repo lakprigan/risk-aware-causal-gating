@@ -1,23 +1,53 @@
-# Generated experiment outputs (regenerable via run.py / plot_results.py)
-results.json
-figures/
-analysis/
-tables/
-results_scaled/
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.venv/
-venv/
-
-# OS / editor
-.DS_Store
-*.swp
-
-# Secrets / credentials (never commit)
+# --- Credentials / secrets: NEVER commit ---
+*.cred
+**/.aws/
+aws_credentials*
+*credentials*
+.env
 *.pem
 *.key
-.env
+
+# --- Experiment results / artifacts: do not check in ---
+results_llm/
+**/llm_results*.json
+**/results.json
+run.log
+**/run.log
+**/run_racg.log
+run_racg.sh
+**/run_racg.sh
+
+# --- Setup notes that reference account IDs / roles: do not check in ---
+RUN_SETUP.md
+**/RUN_SETUP.md
+
+# --- Paper build output (commit source .tex, not the rendered PDF) ---
+main.pdf
+
+# --- Python / venv / caches ---
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+**/.pytest_cache/
+
+# --- LaTeX build artifacts ---
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# --- OS noise ---
+.DS_Store
+**/.DS_Store
+
+# --- misc run artifacts ---
+.last_out
+**/.last_out

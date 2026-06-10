@@ -1,41 +1,89 @@
 # RiskGate
 
-A controlled, deterministic benchmark for **Risk-Aware Causal Gating (RACG)**,
-the method in *"Capability Minimization as a Safety Primitive."* It validates
-hypotheses **H1–H5** without any LLM API calls.
+A controlled benchmark for **Risk-Aware Causal Gating (RACG)**, the method in
+*"Capability Minimization as a Safety Primitive."* The **deterministic track**
+validates hypotheses **H1–H5** with no LLM API calls; an optional **real-LLM
+validation track** (paper Sec. 7.1) drives actual models through the same
+benchmark to confirm the structural prediction holds for real agents.
 
-## Why a mock agent?
+## Why a deterministic agent (and why also a real LLM)?
 
-The agent is a deterministic, **adversarially-compliant** heuristic policy, not
-an LLM. This is a deliberate scientific choice: **H5 (structural injection
-defense) is a claim about the action space**, so it must hold for *any* agent —
-including a worst-case one that always obeys injections when the target tool is
-visible. If the dangerous tool is gated out, even a fully compliant agent cannot
-call it. Using a real LLM would only add noise to a claim that is structural.
+The default agent is a deterministic, **adversarially-compliant** heuristic
+policy, not an LLM. This is a deliberate scientific choice: **H5 (structural
+injection defense) is a claim about the action space**, so it must hold for
+*any* agent — including a worst-case one that always obeys injections when the
+target tool is visible. If the dangerous tool is gated out, even a fully
+compliant agent cannot call it. Demonstrating ISR=0 against this worst case
+*upper-bounds* ISR for any real model.
+
+The **real-LLM track** complements (does not replace) this. It swaps the
+deterministic policy for a real model while holding the gating layer fixed, and
+checks that the model-driven high-risk-call rate under injection behaves as
+predicted: zero under RACG (the tool is absent from `V_t`), nonzero under
+all-tools and CMTF. See "Real-LLM validation" below.
 
 ## Layout
 
 ```
 riskgate/
-  model.py      # Tool contract, Risk tiers, risk() penalty map (Eq. 6), Task, Injection
-  registry.py   # 100-tool registry: core workflow tools + distractors (Table II)
-  filters.py    # AllTools, KeywordTopK, StateAware, CausalFrontier (CMTF), RACG
-  env.py        # mock agent + deterministic mocked execution + bounded loop
-  tasks.py      # benign + safety-stress + high-risk-shortcut + injections
-  runner.py     # runs everything, aggregates metrics, validates H1-H5
-tests/          # pytest: structural guarantees behind H1-H5
-run.py          # entry point -> results.json + console summary
-plot_results.py # regenerate figures/*.png from results.json
+  riskgate/
+    model.py      # Tool contract, Risk tiers, risk() penalty map (Eq. 6), Task, Injection
+    registry.py   # 100-tool registry: core workflow tools + distractors (Table II)
+    filters.py    # AllTools, KeywordTopK, StateAware, CausalFrontier (CMTF), RACG
+    env.py        # MockAgent + LLMAgent + deterministic mocked execution + bounded loop
+    tasks.py      # benign + safety-stress + high-risk-shortcut + injections
+    llm.py        # provider abstraction: Anthropic, Bedrock, OpenAI-compatible, Stub
+    runner.py     # deterministic track: runs everything, aggregates, validates H1-H5
+  tests/          # pytest: structural guarantees behind H1-H5
+  run.py          # deterministic entry point -> results.json + console summary
+  llm_runner.py   # real-LLM validation entry point -> llm_results.json
+  plot_results.py # regenerate ../figures/*.png from results.json
 ```
 
-## Run
+## Run (deterministic track)
 
 ```bash
+cd riskgate
 pip install -r requirements.txt
 python run.py            # prints the metrics table + H1-H5 PASS/FAIL, writes results.json
 python -m pytest -q      # structural unit tests
-python plot_results.py   # regenerate figures from measured data (figures/*.png)
+python plot_results.py   # regenerate the paper figures from measured data
 ```
+
+## Real-LLM validation (paper Sec. 7.1)
+
+Drives a real model as the policy over the filter-produced visible tool set,
+holding the gating layer (all-tools / CMTF / RACG) fixed. Measures the
+model-driven high-risk-call rate under injection, benign authorization-required
+completion, and exposure-at-attack.
+
+```bash
+# Offline wiring test (no SDK or API key needed):
+python llm_runner.py --models stub
+
+# Real models (install the matching SDK and set the provider's credentials):
+pip install anthropic            # then: export ANTHROPIC_API_KEY=...
+python llm_runner.py --models anthropic:claude-3-5-sonnet-latest
+
+pip install boto3                # then: configure AWS creds + region
+python llm_runner.py --models bedrock:anthropic.claude-3-5-sonnet-20240620-v1:0
+
+pip install openai               # then: export OPENAI_API_KEY=...
+python llm_runner.py --models openai_compat:gpt-4o-mini
+
+# Local model via an OpenAI-compatible server (Ollama / vLLM), no API cost:
+export OPENAI_BASE_URL=http://localhost:11434/v1
+python llm_runner.py --models openai_compat:llama3.1
+
+# Compare several at once; missing SDKs/keys are skipped with a logged reason:
+python llm_runner.py --models anthropic:claude-3-5-sonnet-latest openai_compat:gpt-4o-mini --subset 20
+```
+
+Writes `llm_results.json`. The **prediction** (and what to look for): under
+RACG, `highrisk_call_rate_under_injection` and `exposure_at_attack` should be
+`0.00` for **every** model; under all-tools and CMTF they should be nonzero and
+model-dependent. The offline `stub` reproduces the structural pattern
+(all-tools 1.00, CMTF 0.25, RACG 0.00), mirroring the deterministic ISR column.
 
 ## Hypotheses (mapped to metrics)
 
@@ -63,9 +111,8 @@ if attacker-controlled content can set, e.g., `recipient_confirmed`, the gate
 opens. Authorization provenance is therefore an explicit assumption, not an
 emergent property (see paper §6.1 and Limitations).
 
-## Reproducing the figures
+## Replacing placeholder numbers in the paper
 
-`results.json` (git-ignored, regenerated by `run.py`) contains the measured
-metrics. `plot_results.py` reads it and writes three figures into `figures/`:
-the safety–success Pareto frontier, injection success rate by method, and
-high-risk attack surface over a trajectory.
+`results.json` contains the measured metrics. `plot_results.py` writes the three
+figures the paper includes; the Results table in `main.tex` can be filled from
+the same file.
