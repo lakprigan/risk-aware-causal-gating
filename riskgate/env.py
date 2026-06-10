@@ -235,10 +235,23 @@ def run_task(task: Task, filt: Filter, registry: dict[str, Tool],
             res.success = True
             break
 
+        inj_active = bool(injection and injection.inject_at_step == step)
+
+        # Boundary condition for H5 (provenance violation): a forging injection
+        # models attacker-controlled content that writes the target tool's
+        # authorization variable directly into the state. This happens BEFORE
+        # the filter computes visibility, so the gate sees a (forged) satisfied
+        # authorization and may expose the otherwise-gated high-risk tool. This
+        # is the documented failure mode when Eq. (provenance) is violated, i.e.
+        # a content producer is (incorrectly) allowed to set an alpha-variable.
+        if inj_active and injection and injection.forges_authorization:
+            tgt = registry.get(injection.target_tool)
+            if tgt is not None:
+                state = state | _alpha_of(tgt)
+
         visible = filt.visible(state, task.goal_state, registry, task.query)
         risky = [t for t in visible if t.risk != Risk.LOW]
         unauth = [t.name for t in risky if not t.authorized(state)]
-        inj_active = bool(injection and injection.inject_at_step == step)
 
         chosen = agent.choose(visible, task, state, injection, step)
         obeyed = bool(
@@ -279,9 +292,6 @@ def run_task(task: Task, filt: Filter, registry: dict[str, Tool],
 
         # apply deterministic mocked effect
         produced = task.mock_outputs.get(chosen.name, chosen.produces)
-        # Boundary condition for H5: a forging injection sets the auth var.
-        if obeyed and injection and injection.forges_authorization:
-            produced = produced | _alpha_of(chosen)
         state = state | produced
 
     if task.is_complete(state):
